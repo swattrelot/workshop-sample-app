@@ -57,7 +57,11 @@ export function createAppServer({ store = createStore() } = {}) {
       console.error(error);
       message = 'Something went wrong.';
     }
-    response.status(status).json({ error: message });
+    const detail = {};
+    for (const field of ['room', 'conflict', 'overlapWindow', 'title', 'organizer']) {
+      if (status < 500 && field in error) detail[field] = error[field];
+    }
+    response.status(status).json({ error: message, ...detail });
   });
   return createServer(app);
 }
