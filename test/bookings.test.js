@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createBooking, listBookings, ValidationError } from '../src/bookings.js';
+import { ConflictError, createBooking, findOverlappingBooking, listBookings, ValidationError } from '../src/bookings.js';
 import { createStore } from '../src/store.js';
 
 const validBooking = {
@@ -96,4 +96,82 @@ for (const date of [undefined, '', '2030-2-1', '2030-02-30', 'not-a-date']) {
 
 test('rejects an unknown room filter', () => {
   assert.throws(() => listBookings(createStore(), 'missing', '2030-06-12'), ValidationError);
+});
+
+test('findOverlappingBooking returns the first matching booking in the same room, or null', () => {
+  const bookings = [{ roomId: 'cedar', startTime: '2030-06-12T09:00:00.000Z', endTime: '2030-06-12T10:00:00.000Z' }];
+  assert.equal(findOverlappingBooking(bookings, 'cedar', '2030-06-12T09:30:00.000Z', '2030-06-12T09:45:00.000Z'), bookings[0]);
+  assert.equal(findOverlappingBooking(bookings, 'cedar', '2030-06-12T10:00:00.000Z', '2030-06-12T11:00:00.000Z'), null);
+  assert.equal(findOverlappingBooking(bookings, 'maple', '2030-06-12T09:00:00.000Z', '2030-06-12T10:00:00.000Z'), null);
+});
+
+test('rejects a partially overlapping booking in the same room with a structured ConflictError', () => {
+  const store = createStore();
+  const existing = createBooking(store, validBooking);
+  assert.throws(
+    () => createBooking(store, {
+      ...validBooking, title: 'Budget review', organizer: 'Priya Shah',
+      startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T10:30:00Z',
+    }),
+    (error) => {
+      assert.ok(error instanceof ConflictError);
+      assert.equal(error.status, 409);
+      assert.equal(
+        error.message,
+        'Room Cedar is already booked from 09:00 to 10:00, resulting in a conflict from 09:30 to 10:00.'
+      );
+      assert.equal(error.room, 'Cedar');
+      assert.deepEqual(error.conflict, { start: existing.startTime, end: existing.endTime });
+      assert.deepEqual(error.overlapWindow, { start: '2030-06-12T09:30:00.000Z', end: '2030-06-12T10:00:00.000Z' });
+      assert.equal(error.title, existing.title);
+      assert.equal(error.organizer, existing.organizer);
+      return true;
+    }
+  );
+  assert.equal(store.bookings.length, 1);
+});
+
+test('rejects a request that fully contains an existing booking, and one fully contained within one', () => {
+  const store = createStore();
+  createBooking(store, validBooking);
+  assert.throws(
+    () => createBooking(store, { ...validBooking, startTime: '2030-06-12T08:30:00Z', endTime: '2030-06-12T10:30:00Z' }),
+    ConflictError
+  );
+  assert.throws(
+    () => createBooking(store, { ...validBooking, startTime: '2030-06-12T09:15:00Z', endTime: '2030-06-12T09:45:00Z' }),
+    ConflictError
+  );
+  assert.equal(store.bookings.length, 1);
+});
+
+test('rejects an exact duplicate time range in the same room', () => {
+  const store = createStore();
+  createBooking(store, validBooking);
+  assert.throws(() => createBooking(store, validBooking), ConflictError);
+  assert.equal(store.bookings.length, 1);
+});
+
+test('allows a booking that starts exactly when another ends in the same room', () => {
+  const store = createStore();
+  createBooking(store, validBooking);
+  const backToBack = createBooking(store, { ...validBooking, startTime: '2030-06-12T10:00:00Z', endTime: '2030-06-12T11:00:00Z' });
+  assert.equal(store.bookings.length, 2);
+  assert.equal(backToBack.startTime, '2030-06-12T10:00:00.000Z');
+});
+
+test('allows a booking that ends exactly when another starts in the same room', () => {
+  const store = createStore();
+  createBooking(store, { ...validBooking, startTime: '2030-06-12T11:00:00Z', endTime: '2030-06-12T12:00:00Z' });
+  const before = createBooking(store, { ...validBooking, startTime: '2030-06-12T10:00:00Z', endTime: '2030-06-12T11:00:00Z' });
+  assert.equal(store.bookings.length, 2);
+  assert.equal(before.endTime, '2030-06-12T11:00:00.000Z');
+});
+
+test('allows an identical time range to be booked in a different room', () => {
+  const store = createStore();
+  createBooking(store, validBooking);
+  const other = createBooking(store, { ...validBooking, roomId: 'maple' });
+  assert.equal(store.bookings.length, 2);
+  assert.equal(other.roomId, 'maple');
 });

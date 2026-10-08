@@ -4,10 +4,42 @@ export class ValidationError extends Error {
   status = 400;
 }
 
+export class ConflictError extends Error {
+  status = 409;
+
+  constructor(room, conflict, requestedStart, requestedEnd) {
+    const overlapWindow = {
+      start: requestedStart > conflict.startTime ? requestedStart : conflict.startTime,
+      end: requestedEnd < conflict.endTime ? requestedEnd : conflict.endTime,
+    };
+    super(
+      `Room ${room.name} is already booked from ${formatTime(conflict.startTime)} to ${formatTime(conflict.endTime)}, ` +
+      `resulting in a conflict from ${formatTime(overlapWindow.start)} to ${formatTime(overlapWindow.end)}.`
+    );
+    this.room = room.name;
+    this.conflict = { start: conflict.startTime, end: conflict.endTime };
+    this.overlapWindow = overlapWindow;
+    this.title = conflict.title;
+    this.organizer = conflict.organizer;
+  }
+}
+
+function formatTime(timestamp) {
+  return timestamp.slice(11, 16);
+}
+
 function requireRoom(store, roomId) {
   if (!store.rooms.some((room) => room.id === roomId)) {
     throw new ValidationError('Choose an existing room.');
   }
+}
+
+// Half-open interval overlap: a booking occupies [startTime, endTime), so a booking
+// ending exactly when another starts is back-to-back, not a conflict.
+export function findOverlappingBooking(bookings, roomId, startTime, endTime) {
+  return bookings.find(
+    (booking) => booking.roomId === roomId && startTime < booking.endTime && booking.startTime < endTime
+  ) ?? null;
 }
 
 function parseTimestamp(value) {
@@ -48,6 +80,11 @@ export function createBooking(store, input) {
   const endTime = parseTimestamp(input.endTime);
   if (startTime >= endTime) {
     throw new ValidationError('End time must be after start time.');
+  }
+  const conflict = findOverlappingBooking(store.bookings, input.roomId, startTime, endTime);
+  if (conflict) {
+    const room = store.rooms.find((candidate) => candidate.id === input.roomId);
+    throw new ConflictError(room, conflict, startTime, endTime);
   }
   const booking = {
     id: randomUUID(),
